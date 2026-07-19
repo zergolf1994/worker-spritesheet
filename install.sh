@@ -174,7 +174,7 @@ ExecStart=$APP_DIR/$APP_NAME
 Restart=always
 RestartSec=5
 EnvironmentFile=$APP_DIR/.env
-Environment="WORKER_ID=transfer_$(hostname)@%i"
+Environment="WORKER_ID=spritesheet_$(hostname)@%i"
 # SIGTERM → worker คืนงานเข้าคิว (Release) + mark ตัวเอง offline ก่อนปิด
 TimeoutStopSec=30
 
