@@ -146,7 +146,7 @@ pending ──claim──▶ processing ──สำเร็จ──▶ comple
 ## Spritesheet Flow (1 job = 1 file)
 
 1. **prepare (15%)** — หา video media เล็กสุดของไฟล์ → ตรวจว่าอยู่ storage ตัวเอง → input = `{STORAGE_PATH}/{fileId}/{fileName}` (ไม่เจอไฟล์ = fail)
-2. **generate (70%)** — ffmpeg: fps 1/1s, สูง 168px, tile 6×6 → `sprite-1.jpg`, … + crop แผ่นสุดท้าย + เขียน `sprite.vtt`
+2. **generate (70%)** — ffmpeg: fps 1/1s, สูง 168px, tile 6×6 ขนาดคงที่ (แผ่นสุดท้ายคง padding ไว้) → `sprite-1.jpg`, … + เขียน `sprite.vtt`
 3. **install (90%)** — ย้ายเข้า `{STORAGE_PATH}/{fileId}/sprite/`
 4. **media (100%)** — สร้าง media `thumbnail` (fileName `sprite.vtt`) + clone propagation
 

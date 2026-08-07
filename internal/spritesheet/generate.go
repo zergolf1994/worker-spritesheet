@@ -84,31 +84,10 @@ func Generate(inputPath, outputDir string, duration float64) (*Result, error) {
 		}
 	}
 
-	sheetsCount := len(spriteFiles)
-	framesInLastSheet := totalFrames - (sheetsCount-1)*framesPerSheet
-	if framesInLastSheet <= 0 {
-		framesInLastSheet = 1
-	}
-	lastSheetRows := int(math.Ceil(float64(framesInLastSheet) / float64(spriteCols)))
-	if lastSheetRows < spriteMaxRows && lastSheetRows > 0 {
-		lastName := spriteFiles[sheetsCount-1]
-		lastPath := filepath.Join(spriteDir, lastName)
-		croppedPath := filepath.Join(spriteDir, "cropped_last.jpg")
-		cropW := thumbWidth * spriteCols
-		cropH := thumbHeight * lastSheetRows
-
-		cropCmd := exec.Command("ffmpeg",
-			"-y", "-i", lastPath,
-			"-vf", fmt.Sprintf("crop=%d:%d:0:0", cropW, cropH),
-			"-q:v", "5", croppedPath,
-		)
-		if cropOutput, cropErr := cropCmd.CombinedOutput(); cropErr != nil {
-			log.Printf("⚠️ Failed to crop last sprite sheet: %s", string(cropOutput))
-		} else {
-			os.Remove(lastPath)
-			os.Rename(croppedPath, lastPath)
-		}
-	}
+	// Keep every sheet at the same 6x6 dimensions. The tile filter pads unused
+	// cells in the final sheet; cropping that padding changes the image's natural
+	// size and makes players that scale thumbnails by sheet dimensions display a
+	// frame that no longer matches the VTT xywh rectangle.
 
 	vttContent := generateVTT(spriteFiles, spriteInterval, thumbWidth, thumbHeight, totalFrames, spriteCols, framesPerSheet)
 	vttPath := filepath.Join(spriteDir, "sprite.vtt")
