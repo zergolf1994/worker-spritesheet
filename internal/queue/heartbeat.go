@@ -113,6 +113,27 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 	}
 }
 
+// SetWorkerStatus updates status/activeJobs immediately when a job starts or
+// finishes instead of waiting for the next heartbeat tick. It never changes
+// enable because that flag is controlled by the admin (or the disk safety
+// pause). A paused worker must also remain paused after its current job exits.
+func SetWorkerStatus(workerID, status string, activeJobs int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := models.WorkerModel.Col().UpdateOne(ctx,
+		bson.M{"workerId": workerID, "status": bson.M{"$ne": enums.WorkerStatusPaused}},
+		bson.M{"$set": bson.M{
+			"status":     status,
+			"activeJobs": activeJobs,
+			"updatedAt":  time.Now(),
+		}},
+	)
+	if err != nil {
+		log.Printf("⚠️ Failed to set worker status=%s: %v", status, err)
+	}
+}
+
 // markOffline flags the worker offline on graceful shutdown so the admin
 // sees it immediately instead of waiting for the heartbeat TTL to expire.
 func markOffline(workerID string) {
