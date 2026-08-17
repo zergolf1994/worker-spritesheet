@@ -57,10 +57,18 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 
 	storagePath := config.AppConfig.StoragePath
 	storageID := config.AppConfig.StorageId
-	colocated := storageID != "" && storagePath != ""
+	storageBound := storageID != "" && storagePath != ""
+	configuredLocal := false
+	if storageBound {
+		configuredStorage, storageErr := models.StorageModel.FindByID(ctx, storageID)
+		if storageErr != nil {
+			return fmt.Errorf("configured storage not found: %w", storageErr)
+		}
+		configuredLocal = configuredStorage.Type == enums.StorageTypeLocal
+	}
 
 	// co-located: storage ตัวเองใช้ไม่ได้ชั่วคราว (ปิด/เต็ม) — คืนคิว
-	if colocated {
+	if configuredLocal {
 		if reason := localStorageBlockReason(ctx); reason != "" {
 			return fmt.Errorf("%s: %w", reason, queue.ErrJobRequeue)
 		}
@@ -116,30 +124,24 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 		return fmt.Errorf("prepare: %w", err)
 	}
 
+	sourceStorage, sourceErr := models.StorageModel.FindByID(ctx, derefStr(videoMedia.StorageID))
+	if sourceErr != nil {
+		return fmt.Errorf("prepare: source storage not found: %w", sourceErr)
+	}
+	if !sourceStorage.IsOnline() {
+		return fmt.Errorf("prepare: source storage unavailable: %w", queue.ErrJobRequeue)
+	}
+	useLocalDisk := shouldUseLocalDisk(storageID, storagePath, sourceStorage)
+
 	var inputPath string
-	var sourceStorage *models.Storage
-	if colocated {
-		if derefStr(videoMedia.StorageID) != storageID {
-			// enqueuer จ่ายงานตาม storage ของ media — ถ้าไม่ตรงแปลว่า media
-			// ย้ายไปแล้วหลังเข้าคิว ให้คืนคิว (enqueuer รอบใหม่จะจ่ายให้ถูกเครื่อง)
-			return fmt.Errorf("video media moved to storage %s: %w",
-				derefStr(videoMedia.StorageID), queue.ErrJobRequeue)
-		}
+	if useLocalDisk {
 		videoFileName := derefStr(videoMedia.FileName)
 		inputPath = filepath.Join(storagePath, fileID, videoFileName)
 		if _, statErr := os.Stat(inputPath); statErr != nil {
 			return fmt.Errorf("prepare: local video missing: %s", inputPath)
 		}
 	} else {
-		// remote: โหลดผ่าน storage-node HTTP ของเครื่องที่ media อยู่
-		var sourceErr error
-		sourceStorage, sourceErr = models.StorageModel.FindByID(ctx, derefStr(videoMedia.StorageID))
-		if sourceErr != nil {
-			return fmt.Errorf("prepare: source storage not found: %w", sourceErr)
-		}
-		if !sourceStorage.IsOnline() {
-			return fmt.Errorf("prepare: source storage unavailable: %w", queue.ErrJobRequeue)
-		}
+		// remote: Local โหลดผ่าน storage-node; S3 โหลด raw object ผ่าน originUrl
 		var sourceURL string
 		if sourceStorage.Type == enums.StorageTypeS3 {
 			sourceURL, sourceErr = sourceStorage.GetOriginObjectURL(fileID, derefStr(videoMedia.FileName))
@@ -187,7 +189,7 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 		totalSpriteSize += GetFileSize(filepath.Join(result.SpriteDir, name))
 	}
 
-	if colocated {
+	if useLocalDisk {
 		// ─── STEP 3: INSTALL → {storagePath}/{fileId}/sprite/ ─
 		startStep(ctx, job.ID, "install")
 
@@ -297,4 +299,11 @@ func fileDuration(file *models.File) float64 {
 		return *file.Metadata.Duration
 	}
 	return 0
+}
+
+func shouldUseLocalDisk(configuredStorageID, storagePath string, sourceStorage *models.Storage) bool {
+	return sourceStorage != nil &&
+		sourceStorage.Type == enums.StorageTypeLocal &&
+		configuredStorageID != "" && storagePath != "" &&
+		sourceStorage.ID == configuredStorageID
 }

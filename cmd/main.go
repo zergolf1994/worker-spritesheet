@@ -24,19 +24,19 @@ func main() {
 	workerID := utils.GenerateWorkerID()
 	log.Printf("🚀 Starting Worker Spritesheet %s [Worker: %s]", version, workerID)
 
-	// 2 โหมด:
-	//   - co-located: มี STORAGE_ID + STORAGE_PATH → อ่าน/เขียนดิสก์ตรง
-	//     (Claim กรอง targetStorageId = STORAGE_ID)
+	// 2 โหมดการ claim:
+	//   - storage-bound: มี STORAGE_ID + STORAGE_PATH → claim งานของ storage
+	//     นั้น; Local อ่านดิสก์ตรง ส่วน S3 ใช้ originUrl
 	//   - remote pool: ไม่มีทั้งคู่ → โหลดวิดีโอผ่าน HTTP, ผลลัพธ์อัพ S3
 	//     ให้ worker-transfer ติดตั้ง (Claim เฉพาะงานไม่ผูก storage)
-	colocated := config.AppConfig.StorageId != "" && config.AppConfig.StoragePath != ""
-	if !colocated && (config.AppConfig.StorageId != "" || config.AppConfig.StoragePath != "") {
+	storageBound := config.AppConfig.StorageId != "" && config.AppConfig.StoragePath != ""
+	if !storageBound && (config.AppConfig.StorageId != "" || config.AppConfig.StoragePath != "") {
 		log.Println("❌ STORAGE_ID and STORAGE_PATH must be set together (or both empty for remote mode)")
 		time.Sleep(5 * time.Second) // กัน systemd restart-loop รัวๆ
 		os.Exit(1)
 	}
-	if colocated {
-		log.Printf("📍 Mode: co-located (storage=%s path=%s)", config.AppConfig.StorageId, config.AppConfig.StoragePath)
+	if storageBound {
+		log.Printf("📍 Mode: storage-bound (storage=%s path=%s)", config.AppConfig.StorageId, config.AppConfig.StoragePath)
 	} else {
 		log.Println("📍 Mode: remote pool (download via storage-node HTTP, results → S3 + ingest)")
 	}
@@ -78,8 +78,8 @@ func main() {
 
 	// ── Job loop (blocking จนโดน SIGINT/SIGTERM) ──────────────
 	// shutdown ระหว่างทำงาน → loop จะ Release งานคืนคิวให้เอง
-	// gate (เฉพาะ co-located): storage ตัวเองปิด/เต็ม/ออฟไลน์ → หยุดหยิบงาน
-	if colocated {
+	// gate (เฉพาะ storage-bound): storage ปิด/เต็ม/ออฟไลน์ → หยุดหยิบงาน
+	if storageBound {
 		queue.ClaimGate = spritesheet.LocalStorageBlockReason
 	}
 	queue.RunLoop(ctx, workerID, spritesheet.Run)
