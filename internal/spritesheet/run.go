@@ -5,6 +5,7 @@ import (
 	goerrors "errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,9 +29,9 @@ import (
 //   - co-located (มีทั้งคู่ — รันคู่ storage-node): อ่านวิดีโอตรงจาก
 //     {STORAGE_PATH}/{fileId}/ → ผลลัพธ์ย้ายเข้า sprite/ ตรงๆ + สร้าง
 //     thumbnail media เอง (ไม่มี network I/O ของวิดีโอเลย)
-//   - remote (ไม่มี — เครื่องกลาง): โหลดวิดีโอผ่าน HTTP จาก storage-node
-//     ของเครื่องที่ไฟล์อยู่ → zip → อัพ S3 temp + สร้าง ingest processed
-//     แล้ว worker-transfer เป็นคนติดตั้ง + สร้าง thumbnail media
+//   - remote (ไม่มี — เครื่องกลาง): Local media โหลดผ่าน storage-node แล้ว
+//     ส่ง sprite.zip ผ่าน Temp/transfer; S3 media โหลดผ่าน originUrl แล้ว
+//     อัปโหลด sprite files กลับ permanent S3 + สร้าง thumbnail media โดยตรง
 //
 // Steps: prepare 15 → generate 70 → install 90 → media 100
 
@@ -116,6 +117,7 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 	}
 
 	var inputPath string
+	var sourceStorage *models.Storage
 	if colocated {
 		if derefStr(videoMedia.StorageID) != storageID {
 			// enqueuer จ่ายงานตาม storage ของ media — ถ้าไม่ตรงแปลว่า media
@@ -130,18 +132,30 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 		}
 	} else {
 		// remote: โหลดผ่าน storage-node HTTP ของเครื่องที่ media อยู่
-		sourceStorage, sErr := models.StorageModel.FindByID(ctx, derefStr(videoMedia.StorageID))
-		if sErr != nil {
-			return fmt.Errorf("prepare: source storage not found: %w", sErr)
+		var sourceErr error
+		sourceStorage, sourceErr = models.StorageModel.FindByID(ctx, derefStr(videoMedia.StorageID))
+		if sourceErr != nil {
+			return fmt.Errorf("prepare: source storage not found: %w", sourceErr)
 		}
-		hostPort := sourceStorage.GetHostPort()
-		if hostPort == "" {
-			return fmt.Errorf("prepare: source storage has no host")
+		if !sourceStorage.IsOnline() {
+			return fmt.Errorf("prepare: source storage unavailable: %w", queue.ErrJobRequeue)
 		}
-		url := fmt.Sprintf("http://%s/%s.mp4", hostPort, videoMedia.Slug)
+		var sourceURL string
+		if sourceStorage.Type == enums.StorageTypeS3 {
+			sourceURL, sourceErr = sourceStorage.GetOriginObjectURL(fileID, derefStr(videoMedia.FileName))
+			if sourceErr != nil {
+				return fmt.Errorf("prepare: resolve S3 origin: %w", sourceErr)
+			}
+		} else {
+			hostPort := sourceStorage.GetHostPort()
+			if hostPort == "" {
+				return fmt.Errorf("prepare: source storage has no host")
+			}
+			sourceURL = fmt.Sprintf("http://%s/%s.mp4", hostPort, videoMedia.Slug)
+		}
 		inputPath = filepath.Join(workDir, "input.mp4")
-		utils.LogMain("📥 [%s] Downloading %s", slug, url)
-		if dErr := downloader.DownloadURL(ctx, url, inputPath, pctLogger64(slug, "prepare")); dErr != nil {
+		utils.LogMain("📥 [%s] Downloading %s", slug, sourceURL)
+		if dErr := downloader.DownloadURL(ctx, sourceURL, inputPath, pctLogger64(slug, "prepare")); dErr != nil {
 			return fmt.Errorf("prepare: download: %w", dErr)
 		}
 	}
@@ -201,6 +215,44 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 			}
 			cloneMediaToClonedFiles(ctx, fileID, thumbMedia, slug)
 			utils.LogMain("✅ [%s] Media record: thumbnail", slug)
+		}
+		completeStep(ctx, job.ID, "media")
+	} else if sourceStorage != nil && sourceStorage.Type == enums.StorageTypeS3 {
+		// ─── STEP 3 (S3 source): upload final sprite objects directly ─
+		startStep(ctx, job.ID, "install")
+		for _, name := range result.SpriteFiles {
+			localPath := filepath.Join(result.SpriteDir, name)
+			size := GetFileSize(localPath)
+			objectKey := path.Join(fileID, "sprite", name)
+			if err := uploader.VerifyS3Object(ctx, sourceStorage, objectKey, size); err != nil {
+				utils.LogMain("📤 [%s] Uploading %s → permanent S3...", slug, objectKey)
+				if err := uploader.UploadToS3(ctx, sourceStorage, localPath, objectKey, nil); err != nil {
+					return fmt.Errorf("upload %s: %w", name, err)
+				}
+				if err := uploader.VerifyS3Object(ctx, sourceStorage, objectKey, size); err != nil {
+					return fmt.Errorf("verify %s: %w", name, err)
+				}
+			}
+		}
+		completeStep(ctx, job.ID, "install")
+
+		// สร้าง media หลังทุก object ตรวจสอบผ่านแล้วเท่านั้น
+		startStep(ctx, job.ID, "media")
+		if !hasThumbnailMedia(ctx, fileID) {
+			now := time.Now()
+			thumbFn := enums.SpriteVTTName
+			sid := sourceStorage.ID
+			thumbMedia := models.Media{
+				ID: newUUID(), Type: enums.MediaTypeThumbnail, FileName: &thumbFn,
+				StorageID: &sid, Slug: utils.RandomString(11, false), FileID: &fileID,
+				Metadata:  &models.MediaMetadata{Size: totalSpriteSize, Duration: duration},
+				CreatedAt: now, UpdatedAt: now,
+			}
+			if _, err := models.MediaModel.Create(ctx, &thumbMedia); err != nil {
+				return fmt.Errorf("create S3 thumbnail media: %w", err)
+			}
+			cloneMediaToClonedFiles(ctx, fileID, thumbMedia, slug)
+			utils.LogMain("✅ [%s] S3 thumbnail media created", slug)
 		}
 		completeStep(ctx, job.ID, "media")
 	} else {

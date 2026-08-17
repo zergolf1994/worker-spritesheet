@@ -7,12 +7,12 @@ Queue-based spritesheet worker สำหรับ [VdoHide](https://vdohide.xyz)
 > | โหมด | เงื่อนไข | input | output |
 > |---|---|---|---|
 > | **co-located** (แนะนำ) | รันคู่ storage-node, ตั้ง `STORAGE_ID`+`STORAGE_PATH` | อ่านตรงจากดิสก์ | ย้ายเข้า `sprite/` ตรง + สร้าง thumbnail media เอง |
-> | **remote pool** | เครื่องกลาง ไม่ตั้งทั้งคู่ | โหลดผ่าน HTTP จาก storage-node | zip → S3 temp + ingest `processed` ให้ **worker-transfer** ติดตั้ง |
+> | **remote pool** | เครื่องกลาง ไม่ตั้งทั้งคู่ | Local โหลดผ่าน storage-node; S3 โหลดผ่าน `originUrl` | S3 source อัปโหลด sprite กลับ S3 ถาวรและสร้าง media โดยตรง; Local source ใช้ Temp + transfer |
 
 ## Features
 
 - **Co-located** — enqueuer จ่ายงานตาม storage ที่ video media อยู่ (`targetStorageId`) → worker claim เฉพาะงานของ storage ตัวเอง อ่าน/เขียนไฟล์ผ่าน path ตรง ไม่มี network I/O ของตัววิดีโอเลย
-- **Remote pool** — งานของ storage ที่ไม่มี worker ติดเครื่อง enqueuer จ่ายแบบไม่ผูก `targetStorageId` → เครื่องกลางหยิบไปทำ ผลลัพธ์ส่งผ่านท่อ sprite.zip เดิมของ worker-transfer (enqueuer เลือก worker ติดเครื่องก่อนเสมอ)
+- **Remote pool** — งานของ storage ที่ไม่มี worker ติดเครื่อง enqueuer จ่ายแบบไม่ผูก `targetStorageId` → Local source ส่งผลผ่าน sprite.zip/worker-transfer ส่วน S3 source ใช้ `originUrl` เป็น input และอัปโหลด `{fileId}/sprite/*` กลับ S3 เดิมโดยตรง
 - **เลือกวิดีโอเล็กสุด** — 360 → 480 → 720 → 1080 → original (เฟรม sprite เล็กมาก ไม่จำเป็นต้อง decode ไฟล์ใหญ่)
 - **Auto Retry + Backoff** — fail → กลับเป็น pending ใน doc เดิม (1m, 2m) ครบ 3 ครั้ง → failed ถาวร (ไฟล์ไม่ถูกแตะ — วิดีโอยังเล่นได้ปกติ แค่ไม่มี preview thumbnail)
 - **Instant Cancel** — admin เซ็ต `status: cancelled` → context ยกเลิก → เก็บกวาด temp

@@ -1,0 +1,25 @@
+package models
+
+import "testing"
+
+func TestGetOriginObjectURL(t *testing.T) {
+	origin := "origin.example.com/base"
+	storage := Storage{Type: "s3", OriginURL: &origin}
+
+	got, err := storage.GetOriginObjectURL("file id", "file_360.mp4")
+	if err != nil {
+		t.Fatalf("GetOriginObjectURL() error = %v", err)
+	}
+	want := "https://origin.example.com/base/file%20id/file_360.mp4"
+	if got != want {
+		t.Fatalf("GetOriginObjectURL() = %q, want %q", got, want)
+	}
+}
+
+func TestGetOriginObjectURLRejectsQuery(t *testing.T) {
+	origin := "https://origin.example.com?token=secret"
+	storage := Storage{Type: "s3", OriginURL: &origin}
+	if _, err := storage.GetOriginObjectURL("file", "video.mp4"); err == nil {
+		t.Fatal("expected originUrl query to be rejected")
+	}
+}

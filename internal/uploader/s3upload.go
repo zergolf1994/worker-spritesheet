@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"worker-spritesheet/internal/db/models"
@@ -27,7 +29,7 @@ const (
 // objectKey is the full key (e.g. "{fileID}/file_original.mp4").
 // onProgress is called periodically with (uploaded bytes, total bytes).
 func UploadToS3(ctx context.Context, storage *models.Storage, localPath, objectKey string, onProgress func(uploaded, total int64)) error {
-	if storage.S3 == nil {
+	if storage.S3 == nil || storage.S3.Endpoint == nil {
 		return fmt.Errorf("storage has no S3 config")
 	}
 
@@ -67,18 +69,76 @@ func UploadToS3(ctx context.Context, storage *models.Storage, localPath, objectK
 		return fmt.Errorf("stat local file: %w", err)
 	}
 	totalSize := fileInfo.Size()
+	contentType := contentTypeFor(localPath)
 
 	log.Printf("📤 S3 Upload: endpoint=%s bucket=%s key=%s size=%.2fMB",
 		endpoint, s3Cfg.Bucket, fullKey, float64(totalSize)/1024/1024)
 
 	if totalSize <= multipartThreshold {
-		return uploadSinglePart(ctx, client, s3Cfg.Bucket, fullKey, localPath, totalSize, onProgress)
+		return uploadSinglePart(ctx, client, s3Cfg.Bucket, fullKey, localPath, totalSize, contentType, onProgress)
 	}
-	return uploadMultipart(ctx, client, s3Cfg.Bucket, fullKey, localPath, totalSize, onProgress)
+	return uploadMultipart(ctx, client, s3Cfg.Bucket, fullKey, localPath, totalSize, contentType, onProgress)
+}
+
+func contentTypeFor(filePath string) string {
+	switch strings.ToLower(filepath.Ext(filePath)) {
+	case ".vtt":
+		return "text/vtt; charset=utf-8"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".zip":
+		return "application/zip"
+	case ".log", ".txt":
+		return "text/plain; charset=utf-8"
+	}
+	if detected := mime.TypeByExtension(strings.ToLower(filepath.Ext(filePath))); detected != "" {
+		return detected
+	}
+	return "application/octet-stream"
+}
+
+// VerifyS3Object checks that an uploaded object exists with the expected size.
+func VerifyS3Object(ctx context.Context, storage *models.Storage, objectKey string, expectedSize int64) error {
+	if storage.S3 == nil || storage.S3.Endpoint == nil {
+		return fmt.Errorf("storage has no S3 config")
+	}
+	s3Cfg := storage.S3
+	endpoint := strings.TrimRight(*s3Cfg.Endpoint, "/")
+	if !strings.HasPrefix(endpoint, "http") {
+		endpoint = "https://" + endpoint
+	}
+	if strings.HasSuffix(endpoint, "/"+s3Cfg.Bucket) {
+		endpoint = endpoint[:len(endpoint)-len(s3Cfg.Bucket)-1]
+	}
+	fullKey := objectKey
+	if s3Cfg.Prefix != "" && !strings.HasPrefix(objectKey, s3Cfg.Prefix) {
+		fullKey = strings.TrimRight(s3Cfg.Prefix, "/") + "/" + objectKey
+	}
+	region := s3Cfg.Region
+	if region == "" {
+		region = "auto"
+	}
+	client := s3.New(s3.Options{
+		Region: region, BaseEndpoint: &endpoint,
+		Credentials:  credentials.NewStaticCredentialsProvider(s3Cfg.AccessKeyID, s3Cfg.SecretAccessKey, ""),
+		UsePathStyle: s3Cfg.ForcePathStyle,
+	})
+	result, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s3Cfg.Bucket), Key: aws.String(fullKey),
+	})
+	if err != nil {
+		return fmt.Errorf("S3 HeadObject: %w", err)
+	}
+	if result.ContentLength == nil || *result.ContentLength != expectedSize {
+		return fmt.Errorf("S3 size mismatch: expected %d", expectedSize)
+	}
+	return nil
 }
 
 // uploadSinglePart uploads a file in a single PutObject call.
-func uploadSinglePart(ctx context.Context, client *s3.Client, bucket, key, localPath string, totalSize int64, onProgress func(uploaded, total int64)) error {
+func uploadSinglePart(ctx context.Context, client *s3.Client, bucket, key, localPath string, totalSize int64, contentType string, onProgress func(uploaded, total int64)) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
@@ -90,7 +150,7 @@ func uploadSinglePart(ctx context.Context, client *s3.Client, bucket, key, local
 		Key:           aws.String(key),
 		Body:          f,
 		ContentLength: aws.Int64(totalSize),
-		ContentType:   aws.String("video/mp4"),
+		ContentType:   aws.String(contentType),
 	})
 	if err != nil {
 		return fmt.Errorf("S3 PutObject: %w", err)
@@ -104,7 +164,7 @@ func uploadSinglePart(ctx context.Context, client *s3.Client, bucket, key, local
 }
 
 // uploadMultipart uploads a file using S3 multipart upload.
-func uploadMultipart(ctx context.Context, client *s3.Client, bucket, key, localPath string, totalSize int64, onProgress func(uploaded, total int64)) error {
+func uploadMultipart(ctx context.Context, client *s3.Client, bucket, key, localPath string, totalSize int64, contentType string, onProgress func(uploaded, total int64)) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("open file: %w", err)
@@ -115,7 +175,7 @@ func uploadMultipart(ctx context.Context, client *s3.Client, bucket, key, localP
 	createResp, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
-		ContentType: aws.String("video/mp4"),
+		ContentType: aws.String(contentType),
 	})
 	if err != nil {
 		return fmt.Errorf("S3 CreateMultipartUpload: %w", err)
