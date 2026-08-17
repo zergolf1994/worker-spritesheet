@@ -23,3 +23,15 @@ func TestGetOriginObjectURLRejectsQuery(t *testing.T) {
 		t.Fatal("expected originUrl query to be rejected")
 	}
 }
+
+func TestGetOriginObjectPathURL(t *testing.T) {
+	origin := "https://origin.example.com/base"
+	storage := Storage{Type: "s3", OriginURL: &origin}
+	got, err := storage.GetOriginObjectPathURL("source-file/file_original.mp4")
+	if err != nil {
+		t.Fatalf("GetOriginObjectPathURL() error = %v", err)
+	}
+	if want := "https://origin.example.com/base/source-file/file_original.mp4"; got != want {
+		t.Fatalf("GetOriginObjectPathURL() = %q, want %q", got, want)
+	}
+}

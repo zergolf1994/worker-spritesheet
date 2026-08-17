@@ -119,6 +119,10 @@ func (s *Storage) GetHostPort() string {
 // GetOriginObjectURL resolves a permanent S3 object's HTTP origin URL.
 // originUrl may be a bare hostname or include a base path.
 func (s *Storage) GetOriginObjectURL(fileID, fileName string) (string, error) {
+	return s.GetOriginObjectPathURL(strings.Trim(fileID, "/") + "/" + strings.Trim(fileName, "/"))
+}
+
+func (s *Storage) GetOriginObjectPathURL(objectPath string) (string, error) {
 	if s.Type != enums.StorageTypeS3 || s.OriginURL == nil {
 		return "", fmt.Errorf("S3 storage has no originUrl")
 	}
@@ -136,8 +140,9 @@ func (s *Storage) GetOriginObjectURL(fileID, fileName string) (string, error) {
 	if origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" {
 		return "", fmt.Errorf("originUrl must not contain credentials, query, or fragment")
 	}
-	if strings.TrimSpace(fileID) == "" || strings.TrimSpace(fileName) == "" {
+	objectPath = strings.Trim(strings.TrimSpace(objectPath), "/")
+	if objectPath == "" {
 		return "", fmt.Errorf("origin object path is incomplete")
 	}
-	return url.JoinPath(origin.String(), fileID, fileName)
+	return url.JoinPath(origin.String(), objectPath)
 }

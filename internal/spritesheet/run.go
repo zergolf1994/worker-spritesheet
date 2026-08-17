@@ -135,8 +135,11 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 
 	var inputPath string
 	if useLocalDisk {
-		videoFileName := derefStr(videoMedia.FileName)
-		inputPath = filepath.Join(storagePath, fileID, videoFileName)
+		objectPath := videoMedia.ObjectPath()
+		if objectPath == "" {
+			return fmt.Errorf("prepare: media object path is empty")
+		}
+		inputPath = filepath.Join(storagePath, filepath.FromSlash(objectPath))
 		if _, statErr := os.Stat(inputPath); statErr != nil {
 			return fmt.Errorf("prepare: local video missing: %s", inputPath)
 		}
@@ -144,7 +147,7 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 		// remote: Local โหลดผ่าน storage-node; S3 โหลด raw object ผ่าน originUrl
 		var sourceURL string
 		if sourceStorage.Type == enums.StorageTypeS3 {
-			sourceURL, sourceErr = sourceStorage.GetOriginObjectURL(fileID, derefStr(videoMedia.FileName))
+			sourceURL, sourceErr = sourceStorage.GetOriginObjectPathURL(videoMedia.ObjectPath())
 			if sourceErr != nil {
 				return fmt.Errorf("prepare: resolve S3 origin: %w", sourceErr)
 			}
@@ -244,9 +247,10 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 			now := time.Now()
 			thumbFn := enums.SpriteVTTName
 			sid := sourceStorage.ID
+			thumbPath := path.Join(fileID, "sprite")
 			thumbMedia := models.Media{
 				ID: newUUID(), Type: enums.MediaTypeThumbnail, FileName: &thumbFn,
-				StorageID: &sid, Slug: utils.RandomString(11, false), FileID: &fileID,
+				StorageID: &sid, Slug: utils.RandomString(11, false), Path: &thumbPath, FileID: &fileID,
 				Metadata:  &models.MediaMetadata{Size: totalSpriteSize, Duration: duration},
 				CreatedAt: now, UpdatedAt: now,
 			}
