@@ -59,38 +59,38 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 
 		sys := gatherSystemInfo(config.AppConfig.StoragePath)
 
-		enable := true
+		diskPaused := false
 		if sys.DiskTotal > 0 {
 			diskPct := float64(sys.DiskUsed) / float64(sys.DiskTotal) * 100
 			if diskPct >= diskPauseThreshold {
 				status = enums.WorkerStatusPaused
-				enable = false
+				diskPaused = true
 				log.Printf("⚠️ Heartbeat: disk usage %.1f%% >= %.0f%% — enable=false", diskPct, diskPauseThreshold)
 			}
 		}
 
 		now := time.Now()
-		update := bson.M{
-			"$set": bson.M{
-				"hostname":    hostname,
-				"ip":          ip,
-				"pid":         pid,
-				"type":        workerType,
-				// enqueuer จับคู่ slot กับ storage ปลายทางด้วย field นี้
-				"storageId":   config.AppConfig.StorageId,
-				"status":      status,
-				"enable":      enable,
-				"activeJobs":  activeJobs,
-				"maxJobs":     1, // 1 worker = 1 job at a time
-				"system":      sys,
-				"heartbeatAt": now,
-				"updatedAt":   now,
-			},
-			"$setOnInsert": bson.M{
-				"_id":       uuid.New().String(),
-				"createdAt": now,
-			},
+		setFields := bson.M{
+			"hostname": hostname,
+			"ip":       ip,
+			"pid":      pid,
+			"type":     workerType,
+			// enqueuer จับคู่ slot กับ storage ปลายทางด้วย field นี้
+			"storageId":   config.AppConfig.StorageId,
+			"status":      status,
+			"activeJobs":  activeJobs,
+			"maxJobs":     1, // 1 worker = 1 job at a time
+			"system":      sys,
+			"heartbeatAt": now,
+			"updatedAt":   now,
 		}
+		setOnInsert := bson.M{
+			"_id":       uuid.New().String(),
+			"enable":    true,
+			"createdAt": now,
+		}
+		applyHeartbeatEnable(setFields, setOnInsert, diskPaused)
+		update := bson.M{"$set": setFields, "$setOnInsert": setOnInsert}
 		opts := options.Update().SetUpsert(true)
 		if _, err := models.WorkerModel.Col().UpdateOne(hbCtx, bson.M{"workerId": workerID}, update, opts); err != nil {
 			log.Printf("⚠️ Heartbeat failed: %v", err)
@@ -119,12 +119,13 @@ func markOffline(workerID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// enable เป็นค่าที่ Admin คุมเอง — shutdown เปลี่ยนเฉพาะสถานะ เพื่อให้
+	// restart ไม่เปิดหรือปิด worker ผิดจากค่าที่ผู้ใช้ตั้งไว้
 	now := time.Now()
 	_, err := models.WorkerModel.Col().UpdateOne(ctx,
 		bson.M{"workerId": workerID},
 		bson.M{"$set": bson.M{
 			"status":    enums.WorkerStatusOffline,
-			"enable":    false,
 			"updatedAt": now,
 		}},
 	)
@@ -133,6 +134,16 @@ func markOffline(workerID string) {
 	} else {
 		log.Printf("💤 Worker marked offline (workerId=%s)", workerID)
 	}
+}
+
+func applyHeartbeatEnable(setFields, setOnInsert bson.M, diskPaused bool) {
+	if !diskPaused {
+		return
+	}
+	// Safety pause may disable a worker, but a later heartbeat must never
+	// re-enable it automatically. Admin explicitly enables it after recovery.
+	setFields["enable"] = false
+	delete(setOnInsert, "enable")
 }
 
 // parseWorkerID splits "type_hostname@n" into worker type and hostname.
