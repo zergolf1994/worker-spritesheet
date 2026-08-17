@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"worker-spritesheet/internal/config"
@@ -169,12 +170,16 @@ func cloneMediaToClonedFiles(ctx context.Context, sourceFileID string, media mod
 			Resolution: media.Resolution,
 			StorageID:  media.StorageID,
 			Slug:       utils.RandomString(11, true),
+			Path:       media.Path,
 			FileID:     &clonedFile.ID,
 			Metadata:   media.Metadata,
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
 		clonedFrom := sourceFileID
+		if media.ClonedFrom != nil && strings.TrimSpace(*media.ClonedFrom) != "" {
+			clonedFrom = strings.TrimSpace(*media.ClonedFrom)
+		}
 		clonedMedia.ClonedFrom = &clonedFrom
 
 		if _, err := models.MediaModel.Create(ctx, &clonedMedia); err != nil {
