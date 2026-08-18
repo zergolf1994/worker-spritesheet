@@ -11,6 +11,7 @@ import (
 	"worker-spritesheet/internal/config"
 	"worker-spritesheet/internal/core/logger"
 	"worker-spritesheet/internal/core/utils"
+	"worker-spritesheet/internal/dashboard"
 	"worker-spritesheet/internal/db/database"
 	"worker-spritesheet/internal/queue"
 	"worker-spritesheet/internal/spritesheet"
@@ -75,6 +76,14 @@ func main() {
 		defer close(hbDone)
 		queue.StartHeartbeat(ctx, workerID)
 	}()
+
+	// Several systemd instances may run on one host. Instance @1 owns the
+	// dashboard and reads every sibling's active jobs from MongoDB.
+	if dashboard.ShouldStart(workerID) {
+		go dashboard.Start(ctx, config.AppConfig.DashboardPort, workerID, config.AppConfig.StoragePath)
+	} else {
+		log.Printf("📺 Dashboard is served by worker instance @1 on port %s", config.AppConfig.DashboardPort)
+	}
 
 	// ── Job loop (blocking จนโดน SIGINT/SIGTERM) ──────────────
 	// shutdown ระหว่างทำงาน → loop จะ Release งานคืนคิวให้เอง

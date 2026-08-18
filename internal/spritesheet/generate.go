@@ -1,6 +1,8 @@
 package spritesheet
 
 import (
+	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -25,7 +28,7 @@ type Result struct {
 }
 
 // Generate creates sprite sheets (6x6, 1s interval) under {outputDir}/sprite/.
-func Generate(inputPath, outputDir string, duration float64) (*Result, error) {
+func Generate(ctx context.Context, inputPath, outputDir string, duration float64, gpuEnabled bool, onProgress func(int)) (*Result, error) {
 	if duration <= 0 {
 		info, err := ProbeVideoInfo(inputPath)
 		if err != nil || info.DurationF <= 0 {
@@ -50,17 +53,32 @@ func Generate(inputPath, outputDir string, duration float64) (*Result, error) {
 	scaleFilter := fmt.Sprintf("scale=%d:%d", thumbWidth, thumbHeight)
 	tileFilter := fmt.Sprintf("tile=%dx%d", spriteCols, spriteMaxRows)
 	spritePattern := filepath.Join(spriteDir, "sprite-%d.jpg")
+	totalSheets := int(math.Ceil(float64(totalFrames) / float64(framesPerSheet)))
 
-	cmd := exec.Command("ffmpeg",
-		"-y",
-		"-i", inputPath,
-		"-vf", fmt.Sprintf("%s,%s,%s", fpsFilter, scaleFilter, tileFilter),
-		"-q:v", "9",
-		spritePattern,
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("sprite generation failed: %w\n%s", err, string(output))
+	usedGPU := false
+	if available, reason := nvidiaSpriteAvailable(gpuEnabled); available {
+		utilsLogGPU(inputPath)
+		gpuFilter := fmt.Sprintf("%s,scale_cuda=%d:%d,hwdownload,format=nv12,%s", fpsFilter, thumbWidth, thumbHeight, tileFilter)
+		gpuArgs := spriteFFmpegArgs(inputPath, spritePattern, gpuFilter, true)
+		if err := runSpriteFFmpeg(ctx, gpuArgs, totalSheets, onProgress); err == nil {
+			usedGPU = true
+		} else {
+			if cause := context.Cause(ctx); cause != nil {
+				return nil, cause
+			}
+			log.Printf("⚠️  GPU sprite generation failed: %v — retrying with CPU", err)
+			removeSpriteOutputs(spritePattern)
+		}
+	} else if gpuEnabled {
+		log.Printf("💻 NVIDIA sprite acceleration unavailable (%s) — using CPU", reason)
+	}
+
+	if !usedGPU {
+		cpuFilter := fmt.Sprintf("%s,%s,%s", fpsFilter, scaleFilter, tileFilter)
+		cpuArgs := spriteFFmpegArgs(inputPath, spritePattern, cpuFilter, false)
+		if err := runSpriteFFmpeg(ctx, cpuArgs, totalSheets, onProgress); err != nil {
+			return nil, fmt.Errorf("sprite generation failed: %w", err)
+		}
 	}
 
 	var spriteFiles []string
@@ -101,6 +119,139 @@ func Generate(inputPath, outputDir string, duration float64) (*Result, error) {
 		SpriteFiles: spriteFiles,
 		VTTFile:     "sprite.vtt",
 	}, nil
+}
+
+func spriteFFmpegArgs(inputPath, spritePattern, filter string, cuda bool) []string {
+	args := []string{
+		"-y", "-hide_banner", "-loglevel", "error", "-nostats",
+		"-stats_period", "0.5", "-progress", "pipe:1",
+	}
+	if cuda {
+		args = append(args, "-hwaccel", "cuda", "-hwaccel_output_format", "cuda")
+	}
+	return append(args,
+		"-i", inputPath,
+		"-vf", filter,
+		"-q:v", "9",
+		spritePattern,
+	)
+}
+
+var (
+	nvidiaSpriteOnce      sync.Once
+	nvidiaSpriteSupported bool
+	nvidiaSpriteReason    string
+)
+
+// nvidiaSpriteAvailable checks the runtime, not just FFmpeg's compiled-in CUDA
+// names. The real input can still use an unsupported codec, so Generate also
+// keeps a per-job CPU fallback.
+func nvidiaSpriteAvailable(enabled bool) (bool, string) {
+	if !enabled {
+		return false, "disabled"
+	}
+	nvidiaSpriteOnce.Do(func() {
+		if output, err := exec.Command("nvidia-smi", "-L").CombinedOutput(); err != nil {
+			nvidiaSpriteReason = strings.TrimSpace(string(output))
+			if nvidiaSpriteReason == "" {
+				nvidiaSpriteReason = err.Error()
+			}
+			return
+		}
+		filters, err := exec.Command("ffmpeg", "-hide_banner", "-filters").CombinedOutput()
+		if err != nil || !strings.Contains(string(filters), "scale_cuda") {
+			nvidiaSpriteReason = "FFmpeg scale_cuda filter not found"
+			return
+		}
+		nvidiaSpriteSupported = true
+		nvidiaSpriteReason = "NVIDIA CUDA"
+	})
+	return nvidiaSpriteSupported, nvidiaSpriteReason
+}
+
+func utilsLogGPU(inputPath string) {
+	log.Printf("🎮 NVIDIA GPU detected — sprites use NVDEC + scale_cuda (%s)", filepath.Base(inputPath))
+}
+
+func removeSpriteOutputs(pattern string) {
+	matches, _ := filepath.Glob(strings.Replace(pattern, "%d", "*", 1))
+	for _, match := range matches {
+		_ = os.Remove(match)
+	}
+}
+
+// runSpriteFFmpeg consumes machine-readable progress. The tile filter produces
+// one output frame per sheet, so frame/totalSheets is the actual job progress.
+func runSpriteFFmpeg(ctx context.Context, args []string, totalSheets int, onProgress func(int)) error {
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("pipe progress: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("pipe stderr: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start ffmpeg: %w", err)
+	}
+
+	progressDone := make(chan error, 1)
+	go func() {
+		lastPercent := -1
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			key, value, ok := strings.Cut(scanner.Text(), "=")
+			if !ok || key != "frame" || totalSheets <= 0 {
+				continue
+			}
+			frame, parseErr := strconv.Atoi(strings.TrimSpace(value))
+			if parseErr != nil {
+				continue
+			}
+			percent := frame * 100 / totalSheets
+			if percent > 99 {
+				percent = 99
+			}
+			if percent != lastPercent && onProgress != nil {
+				lastPercent = percent
+				onProgress(percent)
+			}
+		}
+		progressDone <- scanner.Err()
+	}()
+
+	stderrDone := make(chan struct{}, 1)
+	lastLines := make([]string, 0, 10)
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			lastLines = append(lastLines, line)
+			if len(lastLines) > 10 {
+				lastLines = lastLines[1:]
+			}
+		}
+		stderrDone <- struct{}{}
+	}()
+
+	progressErr := <-progressDone
+	<-stderrDone
+	waitErr := cmd.Wait()
+	if waitErr != nil {
+		return fmt.Errorf("%w: %s", waitErr, strings.Join(lastLines, "\n"))
+	}
+	if progressErr != nil {
+		return fmt.Errorf("read progress: %w", progressErr)
+	}
+	if onProgress != nil {
+		onProgress(100)
+	}
+	return nil
 }
 
 func calcThumbSize(inputPath string) (int, int) {

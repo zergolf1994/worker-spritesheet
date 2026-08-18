@@ -156,6 +156,8 @@ cat > "$APP_DIR/.env" <<EOF
 DATABASE_URL=$DATABASE_URL
 STORAGE_ID=$STORAGE_ID
 STORAGE_PATH=$STORAGE_PATH
+DASHBOARD_PORT=8887
+SPRITESHEET_GPU_ENABLED=true
 EOF
 
 # ─── Systemd service template ─────────────────────────────────
@@ -210,6 +212,7 @@ echo "============================================"
 echo ""
 echo "  Directory:  $APP_DIR"
 echo "  Workers:    $RUNNING / $WORKER_COUNT running"
+echo "  Dashboard:  http://0.0.0.0:8887 (served by worker @1)"
 echo ""
 echo "  Commands:"
 echo "    View logs:   journalctl -u \"${SERVICE_NAME}@*\" -f"

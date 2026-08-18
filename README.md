@@ -14,12 +14,14 @@ Queue-based spritesheet worker สำหรับ [VdoHide](https://vdohide.xyz)
 - **Co-located** — enqueuer จ่ายงานตาม storage ที่ video media อยู่ (`targetStorageId`) → worker claim เฉพาะงานของ storage ตัวเอง อ่าน/เขียนไฟล์ผ่าน path ตรง ไม่มี network I/O ของตัววิดีโอเลย
 - **Remote pool** — งานของ storage ที่ไม่มี worker ติดเครื่อง enqueuer จ่ายแบบไม่ผูก `targetStorageId` → Local source ส่งผลผ่าน sprite.zip/worker-transfer ส่วน S3 source ใช้ `originUrl` เป็น input และอัปโหลด `{fileId}/sprite/*` กลับ S3 เดิมโดยตรง
 - **เลือกวิดีโอเล็กสุด** — 360 → 480 → 720 → 1080 → original (เฟรม sprite เล็กมาก ไม่จำเป็นต้อง decode ไฟล์ใหญ่)
+- **GPU acceleration** — ถ้ามี NVIDIA และ FFmpeg รองรับ `scale_cuda` จะใช้ NVDEC + CUDA scale อัตโนมัติ; codec/GPU ใช้ไม่ได้จะ retry ด้วย CPU โดยไม่ทำให้งาน fail
+- **Realtime dashboard** — instance `@1` เปิด monitor ที่ `:8887` แสดง GPU/NVDEC/CPU/RAM/Disk I/O และ progress ของทุก spritesheet worker บน host
 - **Auto Retry + Backoff** — fail → กลับเป็น pending ใน doc เดิม (1m, 2m) ครบ 3 ครั้ง → failed ถาวร (ไฟล์ไม่ถูกแตะ — วิดีโอยังเล่นได้ปกติ แค่ไม่มี preview thumbnail)
 - **Instant Cancel** — admin เซ็ต `status: cancelled` → context ยกเลิก → เก็บกวาด temp
 - **Storage gate** — storage ตัวเองถูกปิด/เต็ม/ออฟไลน์ใน DB → หยุดหยิบงาน
 - **Graceful Shutdown** — SIGTERM → คืนงานเข้าคิว (Release) + mark worker offline
 - **Heartbeat** — รายงานเข้า `workers` ทุก 1 นาที พร้อม `storageId` (enqueuer ใช้จับคู่ slot ↔ storage)
-- **Step-only DB writes** — DB เขียนขอบ step: prepare 15 → generate 70 → install 90 → media 100
+- **Realtime progress** — เขียน MongoDB ทุกประมาณ 1% ระหว่าง prepare/generate/install; overall: prepare 15 → generate 70 → install 90 → media 100
 - **Log per job** — จบงาน → อัพ `logs/process/<slug>.log` ขึ้น S3 ที่ `logs/spritesheet/` แล้วลบ local
 - **Clone propagation** — thumbnail media กระจายไปไฟล์ที่ `clonedFrom` อัตโนมัติ
 
@@ -28,6 +30,7 @@ Queue-based spritesheet worker สำหรับ [VdoHide](https://vdohide.xyz)
 - **MongoDB** (vdohide platform database)
 - **vdohide-service** รันอยู่ (enqueuer `getSpritesheetPending` เติมคิว + reaper)
 - **ffmpeg + ffprobe** (install.sh ติดตั้งให้)
+- NVIDIA GPU เป็น optional; ต้องมี driver, `nvidia-smi` และ FFmpeg filter `scale_cuda` เพื่อเปิด GPU pipeline
 - เครื่องเดียวกับ **storage-node** — `STORAGE_ID` ชี้ record ใน `storages`, `STORAGE_PATH` คือโฟลเดอร์ไฟล์จริง
 
 ---
@@ -82,10 +85,18 @@ WORKER_ID=spritesheet_myhost@1
 
 # Optional — log file (default: logs/worker-spritesheet.log)
 LOG_PATH=logs/worker-spritesheet.log
+
+# Optional — dashboard เปิดโดย instance @1 เท่านั้น
+DASHBOARD_PORT=8887
+
+# Optional — ลองใช้ NVIDIA NVDEC + scale_cuda (fallback CPU อัตโนมัติ)
+SPRITESHEET_GPU_ENABLED=true
 ```
 
 > `STORAGE_ID` + `STORAGE_PATH` ต้องตั้ง**คู่กัน** (co-located) หรือเว้น**ทั้งคู่** (remote pool)
 > — ตั้งมาตัวเดียว binary จะ exit ทันที
+
+เปิด dashboard ที่ `http://<worker-ip>:8887` และเปิด firewall เฉพาะ IP ที่ต้องการเข้าดู หากไม่ต้องการ GPU ให้ตั้ง `SPRITESHEET_GPU_ENABLED=false`
 
 **Job Lifecycle เพิ่มเติมของ remote:** ถ้าไฟล์มี sprite.zip ingest ค้างรอ worker-transfer อยู่ → worker จะ complete งานเฉยๆ ไม่ทำซ้ำ (enqueuer ก็กรองไฟล์กลุ่มนี้ออกแล้วเช่นกัน)
 

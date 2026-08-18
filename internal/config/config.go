@@ -12,8 +12,14 @@ var AppConfig Config
 
 // Config represents the application configuration.
 type Config struct {
-	Port     string
-	MongoURI string
+	// DashboardPort is opened by worker instance @1 only. All sibling
+	// instances publish progress to MongoDB for the shared host dashboard.
+	DashboardPort string
+	MongoURI      string
+
+	// SpriteGPUEnabled allows NVIDIA NVDEC + scale_cuda. Unsupported inputs or
+	// GPU failures automatically retry with the original CPU pipeline.
+	SpriteGPUEnabled bool
 
 	StorageId   string
 	StoragePath string
@@ -30,13 +36,27 @@ func Load() {
 	godotenv.Load()
 
 	AppConfig = Config{
-		MongoURI:  getEnv("DATABASE_URL", "mongodb://localhost:27017"),
-		StorageId: getEnv("STORAGE_ID", ""),
+		DashboardPort:    getEnv("DASHBOARD_PORT", getEnv("PORT", "8887")),
+		MongoURI:         getEnv("DATABASE_URL", "mongodb://localhost:27017"),
+		SpriteGPUEnabled: getBoolEnv("SPRITESHEET_GPU_ENABLED", true),
+		StorageId:        getEnv("STORAGE_ID", ""),
 		// ห้ามมี default — ว่างทั้งคู่ = remote mode (main เช็คว่าต้องตั้งคู่กัน)
 		StoragePath:         getEnv("STORAGE_PATH", ""),
 		S3UploadConcurrency: getIntEnv("S3_UPLOAD_CONCURRENCY", 3, 1, 8),
 		LogPath:             getEnv("LOG_PATH", "logs/worker-spritesheet.log"),
 	}
+}
+
+func getBoolEnv(key string, fallback bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func getIntEnv(key string, fallback, minValue, maxValue int) int {

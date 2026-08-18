@@ -12,10 +12,9 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// ─── Step-only DB writes ─────────────────────────────────────
-// No realtime % to the DB — progress goes to the per-process log only
-// (throttled). The DB is written at step boundaries: overallPercent
-// 15/70/90/100 for prepare/generate/install/media.
+// ─── Realtime progress writes ────────────────────────────────
+// Long-running I/O and FFmpeg work write at most once per 1%, allowing the
+// dashboard to update in realtime without an unbounded number of DB writes.
 
 var stepPercent = map[string]float64{
 	"prepare":  15,
@@ -46,6 +45,34 @@ func completeStep(ctx context.Context, processID, step string) {
 	models.VideoProcessModel.UpdateByID(ctx, processID, bson.M{"$set": set})
 }
 
+func updateStepAndOverall(ctx context.Context, processID, step string, stepPercent, overallPercent float64) {
+	if stepPercent < 0 {
+		stepPercent = 0
+	}
+	if stepPercent > 100 {
+		stepPercent = 100
+	}
+	if overallPercent > 100 {
+		overallPercent = 100
+	}
+	models.VideoProcessModel.UpdateByID(ctx, processID, bson.M{"$set": bson.M{
+		fmt.Sprintf("timeline.%s.status", step):  enums.StepStatusProcessing,
+		fmt.Sprintf("timeline.%s.percent", step): stepPercent,
+		"overallPercent":                         overallPercent,
+	}})
+}
+
+func stepThrottle(stepPct float64) func(float64) bool {
+	last := -stepPct
+	return func(pct float64) bool {
+		if pct-last >= stepPct || pct >= 100 {
+			last = pct
+			return true
+		}
+		return false
+	}
+}
+
 // pctLogger64 returns a bytes-progress callback that logs every ~10%.
 func pctLogger64(slug, step string) func(done, total int64) {
 	lastPct := -10.0
@@ -58,6 +85,20 @@ func pctLogger64(slug, step string) func(done, total int64) {
 			log.Printf("📊 [%s] %s: %.1f%% (%.2f / %.2f MB)", slug, step, pct,
 				float64(done)/1024/1024, float64(total)/1024/1024)
 			lastPct = pct
+		}
+	}
+}
+
+// pctLogger returns a callback that logs each integer milestone once.
+func pctLogger(slug, step string) func(int) {
+	nextMilestone := 0
+	return func(percent int) {
+		if percent > 100 {
+			percent = 100
+		}
+		for nextMilestone <= percent && nextMilestone <= 100 {
+			log.Printf("📊 [%s] %s: %d%%", slug, step, nextMilestone)
+			nextMilestone++
 		}
 	}
 }

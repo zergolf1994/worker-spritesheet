@@ -160,7 +160,17 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 		}
 		inputPath = filepath.Join(workDir, "input.mp4")
 		utils.LogMain("📥 [%s] Downloading %s", slug, sourceURL)
-		if dErr := downloader.DownloadURL(ctx, sourceURL, inputPath, pctLogger64(slug, "prepare")); dErr != nil {
+		writePrepare := stepThrottle(1)
+		logPrepare := pctLogger64(slug, "prepare")
+		if dErr := downloader.DownloadURL(ctx, sourceURL, inputPath, func(done, total int64) {
+			logPrepare(done, total)
+			if total > 0 {
+				pct := float64(done) / float64(total) * 100
+				if writePrepare(pct) {
+					updateStepAndOverall(ctx, job.ID, "prepare", pct, pct*0.15)
+				}
+			}
+		}); dErr != nil {
 			return fmt.Errorf("prepare: download: %w", dErr)
 		}
 	}
@@ -178,7 +188,15 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 	// ─── STEP 2: GENERATE sprite sheets (ffmpeg) ──────────────
 	startStep(ctx, job.ID, "generate")
 
-	result, err := Generate(inputPath, workDir, duration)
+	writeGenerate := stepThrottle(1)
+	logGenerate := pctLogger(slug, "generate")
+	result, err := Generate(ctx, inputPath, workDir, duration, config.AppConfig.SpriteGPUEnabled, func(percent int) {
+		logGenerate(percent)
+		pct := float64(percent)
+		if writeGenerate(pct) {
+			updateStepAndOverall(ctx, job.ID, "generate", pct, 15+pct*0.55)
+		}
+	})
 	if err != nil {
 		return fmt.Errorf("generate: %w", err)
 	}
@@ -225,7 +243,8 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 	} else if sourceStorage != nil && sourceStorage.Type == enums.StorageTypeS3 {
 		// ─── STEP 3 (S3 source): upload final sprite objects directly ─
 		startStep(ctx, job.ID, "install")
-		for _, name := range result.SpriteFiles {
+		writeInstall := stepThrottle(1)
+		for index, name := range result.SpriteFiles {
 			localPath := filepath.Join(result.SpriteDir, name)
 			size := GetFileSize(localPath)
 			objectKey := path.Join(fileID, "sprite", name)
@@ -237,6 +256,10 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 				if err := uploader.VerifyS3Object(ctx, sourceStorage, objectKey, size); err != nil {
 					return fmt.Errorf("verify %s: %w", name, err)
 				}
+			}
+			pct := float64(index+1) / float64(len(result.SpriteFiles)) * 100
+			if writeInstall(pct) {
+				updateStepAndOverall(ctx, job.ID, "install", pct, 70+pct*0.20)
 			}
 		}
 		completeStep(ctx, job.ID, "install")
@@ -278,7 +301,17 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 		// — worker-transfer อ่านจาก ingest.path อยู่แล้ว ไม่ประกอบ key เอง
 		objectKey := fmt.Sprintf("%s/%s_%s", time.Now().Format("2006-01-02"), fileID, enums.SpriteZipName)
 		utils.LogMain("📤 [%s] Uploading %s → S3 temp...", slug, objectKey)
-		if err := uploader.UploadToS3(ctx, s3Storage, zipPath, objectKey, pctLogger64(slug, "install")); err != nil {
+		writeInstall := stepThrottle(1)
+		logInstall := pctLogger64(slug, "install")
+		if err := uploader.UploadToS3(ctx, s3Storage, zipPath, objectKey, func(done, total int64) {
+			logInstall(done, total)
+			if total > 0 {
+				pct := float64(done) / float64(total) * 100
+				if writeInstall(pct) {
+					updateStepAndOverall(ctx, job.ID, "install", pct, 70+pct*0.20)
+				}
+			}
+		}); err != nil {
 			return fmt.Errorf("upload sprite.zip: %w", err)
 		}
 		completeStep(ctx, job.ID, "install")
