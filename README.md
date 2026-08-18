@@ -23,6 +23,7 @@ Queue-based spritesheet worker สำหรับ [VdoHide](https://vdohide.xyz)
 - **Heartbeat** — รายงานเข้า `workers` ทุก 1 นาที พร้อม `storageId` (enqueuer ใช้จับคู่ slot ↔ storage)
 - **Realtime progress** — เขียน MongoDB ทุกประมาณ 1% ระหว่าง prepare/generate/install; overall: prepare 15 → generate 70 → install 90 → media 100
 - **Log per job** — จบงาน → อัพ `logs/process/<slug>.log` ขึ้น S3 ที่ `logs/spritesheet/` แล้วลบ local
+- **Live process log** — กด `View log` ใน Dashboard เพื่ออ่าน log เฉพาะเมื่อเปิด (refresh ทุก 1 วินาที, สูงสุดท้ายไฟล์ 512 KiB)
 - **Clone propagation** — thumbnail media กระจายไปไฟล์ที่ `clonedFrom` อัตโนมัติ
 
 ## Requirements
