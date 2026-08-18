@@ -244,23 +244,31 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 		// ─── STEP 3 (S3 source): upload final sprite objects directly ─
 		startStep(ctx, job.ID, "install")
 		writeInstall := stepThrottle(1)
-		for index, name := range result.SpriteFiles {
-			localPath := filepath.Join(result.SpriteDir, name)
-			size := GetFileSize(localPath)
-			objectKey := path.Join(fileID, "sprite", name)
-			if err := uploader.VerifyS3Object(ctx, sourceStorage, objectKey, size); err != nil {
-				utils.LogMain("📤 [%s] Uploading %s → permanent S3...", slug, objectKey)
-				if err := uploader.UploadToS3(ctx, sourceStorage, localPath, objectKey, nil); err != nil {
-					return fmt.Errorf("upload %s: %w", name, err)
-				}
-				if err := uploader.VerifyS3Object(ctx, sourceStorage, objectKey, size); err != nil {
-					return fmt.Errorf("verify %s: %w", name, err)
-				}
+		logInstall := pctLogger64(slug, "install")
+		uploadOne := func(uploadCtx context.Context, name, localPath, objectKey string, size int64, onProgress func(int64, int64)) error {
+			if err := uploader.VerifyS3Object(uploadCtx, sourceStorage, objectKey, size); err == nil {
+				onProgress(size, size)
+				return nil
 			}
-			pct := float64(index+1) / float64(len(result.SpriteFiles)) * 100
-			if writeInstall(pct) {
-				updateStepAndOverall(ctx, job.ID, "install", pct, 70+pct*0.20)
+			utils.LogMain("📤 [%s] Uploading %s → permanent S3...", slug, objectKey)
+			if err := uploader.UploadToS3(uploadCtx, sourceStorage, localPath, objectKey, onProgress); err != nil {
+				return err
 			}
+			return uploader.VerifyS3Object(uploadCtx, sourceStorage, objectKey, size)
+		}
+		utils.LogMain("📤 [%s] Uploading %d sprite object(s), concurrency=%d", slug, len(result.SpriteFiles), config.AppConfig.SpriteUploadConcurrency)
+		if err := uploadSpriteFiles(ctx, result.SpriteDir, path.Join(fileID, "sprite"), result.SpriteFiles,
+			config.AppConfig.SpriteUploadConcurrency, uploadOne, func(done, total int64) {
+				logInstall(done, total)
+				if total <= 0 {
+					return
+				}
+				pct := float64(done) / float64(total) * 100
+				if writeInstall(pct) {
+					updateStepAndOverall(ctx, job.ID, "install", pct, 70+pct*0.20)
+				}
+			}); err != nil {
+			return fmt.Errorf("upload sprite directory: %w", err)
 		}
 		completeStep(ctx, job.ID, "install")
 

@@ -91,6 +91,9 @@ DASHBOARD_PORT=8887
 
 # Optional — ลองใช้ NVIDIA NVDEC + scale_cuda (fallback CPU อัตโนมัติ)
 SPRITESHEET_GPU_ENABLED=true
+
+# Optional — จำนวน sprite objects ที่อัปโหลด S3 พร้อมกัน (1–16)
+SPRITE_UPLOAD_CONCURRENCY=4
 ```
 
 > `STORAGE_ID` + `STORAGE_PATH` ต้องตั้ง**คู่กัน** (co-located) หรือเว้น**ทั้งคู่** (remote pool)

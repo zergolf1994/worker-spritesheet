@@ -27,6 +27,9 @@ type Config struct {
 	// Number of multipart S3 parts uploaded in parallel.
 	S3UploadConcurrency int
 
+	// Number of separate sprite objects uploaded in parallel.
+	SpriteUploadConcurrency int
+
 	LogPath string // Path to rotating log file (env: LOG_PATH)
 }
 
@@ -41,9 +44,10 @@ func Load() {
 		SpriteGPUEnabled: getBoolEnv("SPRITESHEET_GPU_ENABLED", true),
 		StorageId:        getEnv("STORAGE_ID", ""),
 		// ห้ามมี default — ว่างทั้งคู่ = remote mode (main เช็คว่าต้องตั้งคู่กัน)
-		StoragePath:         getEnv("STORAGE_PATH", ""),
-		S3UploadConcurrency: getIntEnv("S3_UPLOAD_CONCURRENCY", 3, 1, 8),
-		LogPath:             getEnv("LOG_PATH", "logs/worker-spritesheet.log"),
+		StoragePath:             getEnv("STORAGE_PATH", ""),
+		S3UploadConcurrency:     getIntEnv("S3_UPLOAD_CONCURRENCY", 3, 1, 8),
+		SpriteUploadConcurrency: getIntEnv("SPRITE_UPLOAD_CONCURRENCY", 4, 1, 16),
+		LogPath:                 getEnv("LOG_PATH", "logs/worker-spritesheet.log"),
 	}
 }
 
