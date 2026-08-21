@@ -211,8 +211,11 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 	for _, name := range result.SpriteFiles {
 		totalSpriteSize += GetFileSize(filepath.Join(result.SpriteDir, name))
 	}
+	localAvailable := hasAvailableLocalStorage(ctx)
+	installDirectLocal := useLocalDisk && localStorageCanAccept(sourceStorage)
+	uploadDirectS3 := sourceStorage != nil && sourceStorage.Type == enums.StorageTypeS3 && !localAvailable
 
-	if useLocalDisk {
+	if installDirectLocal {
 		// ─── STEP 3: INSTALL → {storagePath}/{fileId}/sprite/ ─
 		startStep(ctx, job.ID, "install")
 
@@ -242,7 +245,7 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 			utils.LogMain("✅ [%s] Media record: thumbnail", slug)
 		}
 		completeStep(ctx, job.ID, "media")
-	} else if sourceStorage != nil && sourceStorage.Type == enums.StorageTypeS3 {
+	} else if uploadDirectS3 {
 		// ─── STEP 3 (S3 source): upload final sprite objects directly ─
 		startStep(ctx, job.ID, "install")
 		writeInstall := stepThrottle(1)

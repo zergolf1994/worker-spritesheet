@@ -26,6 +26,29 @@ func derefStr(s *string) string {
 	return *s
 }
 
+const localStorageMaxPercent = 95.0
+
+func localStorageCanAccept(storage *models.Storage) bool {
+	if storage == nil || storage.Type != enums.StorageTypeLocal || !storage.IsOnline() {
+		return false
+	}
+	return storage.Capacity == nil || storage.Capacity.Percentage < localStorageMaxPercent
+}
+
+func hasAvailableLocalStorage(ctx context.Context) bool {
+	count, err := models.StorageModel.CountDocuments(ctx, bson.M{
+		"enable": true,
+		"status": enums.StorageStatusOnline,
+		"type":   enums.StorageTypeLocal,
+		"$or": []bson.M{
+			{"capacity.percentage": bson.M{"$lt": localStorageMaxPercent}},
+			{"capacity.percentage": bson.M{"$exists": false}},
+			{"capacity": bson.M{"$exists": false}},
+		},
+	})
+	return err == nil && count > 0
+}
+
 // ─── Local storage gating ─────────────────────────────────────
 // A spritesheet worker runs on the same machine as one local storage
 // (STORAGE_ID) and reads video files straight from STORAGE_PATH. The
