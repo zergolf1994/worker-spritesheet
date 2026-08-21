@@ -128,7 +128,9 @@ func run(ctx context.Context, job *models.VideoProcess) error {
 	if sourceErr != nil {
 		return fmt.Errorf("prepare: source storage not found: %w", sourceErr)
 	}
-	if !sourceStorage.IsOnline() {
+	// enable=false means the storage no longer accepts new files. Existing
+	// objects remain readable and may still be used as a spritesheet source.
+	if !sourceStorageReadable(sourceStorage) {
 		return fmt.Errorf("prepare: source storage unavailable: %w", queue.ErrJobRequeue)
 	}
 	useLocalDisk := shouldUseLocalDisk(storageID, storagePath, sourceStorage)
@@ -351,4 +353,8 @@ func shouldUseLocalDisk(configuredStorageID, storagePath string, sourceStorage *
 		sourceStorage.Type == enums.StorageTypeLocal &&
 		configuredStorageID != "" && storagePath != "" &&
 		sourceStorage.ID == configuredStorageID
+}
+
+func sourceStorageReadable(storage *models.Storage) bool {
+	return storage != nil && storage.Status == enums.StorageStatusOnline
 }

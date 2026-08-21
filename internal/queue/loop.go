@@ -169,12 +169,21 @@ func runJob(ctx context.Context, workerID string, job *models.VideoProcess, hand
 		// admin สั่งยกเลิก — doc เป็น cancelled แล้ว ห้ามไปเขียนทับ
 		log.Printf("⏹️ Job %s cancelled by admin (after %s)", job.ID, time.Since(start).Round(time.Second))
 
-	case ctx.Err() != nil || errors.Is(err, context.Canceled), errors.Is(err, ErrJobRequeue):
-		// shutdown / disk เต็ม — ไม่ใช่ความผิดของงาน คืนเข้าคิวไม่นับ retry
+	case ctx.Err() != nil || errors.Is(err, context.Canceled):
+		// shutdown — คืนทันทีเพื่อให้ worker ตัวอื่นรับช่วงต่อได้
 		if e := Release(settleCtx, job.ID); e != nil {
 			log.Printf("⚠️ Release failed for job %s: %v", job.ID, e)
 		}
 		log.Printf("↩️ Job %s released back to queue: %v", job.ID, err)
+
+	case errors.Is(err, ErrJobRequeue):
+		// storage/temp ใช้ไม่ได้ชั่วคราว — ไม่นับ retry แต่ต้องพักก่อน
+		// มิฉะนั้น loop จะ claim งานเดิมซ้ำหลายครั้งต่อวินาที
+		const requeueDelay = time.Minute
+		if e := ReleaseWithBackoff(settleCtx, job.ID, requeueDelay); e != nil {
+			log.Printf("⚠️ Requeue update failed for job %s: %v", job.ID, e)
+		}
+		log.Printf("↩️ Job %s released back to queue for %s: %v", job.ID, requeueDelay, err)
 
 	default:
 		retried, e := RetryOrFail(settleCtx, job, err.Error(), categorize(err))

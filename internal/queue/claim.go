@@ -55,6 +55,7 @@ func Claim(ctx context.Context, workerID string) (*models.VideoProcess, error) {
 				"workerId":  workerID,
 				"claimedAt": now,
 			},
+			"$unset": bson.M{"nextRetryAt": ""},
 		},
 		options.FindOneAndUpdate().
 			SetSort(bson.D{{Key: "priority", Value: -1}, {Key: "createdAt", Value: 1}}).
@@ -170,11 +171,33 @@ func Release(ctx context.Context, jobID string) error {
 		},
 		bson.M{
 			"$set":   bson.M{"status": enums.ProcessStatusPending},
-			"$unset": bson.M{"workerId": "", "claimedAt": ""},
+			"$unset": bson.M{"workerId": "", "claimedAt": "", "nextRetryAt": ""},
 		},
 	)
 	if err != nil && errors.Is(err, mongo.ErrNoDocuments) {
 		return nil // already completed/reaped — nothing to release
+	}
+	return err
+}
+
+// ReleaseWithBackoff returns an environmental failure to pending without
+// consuming a retry, but prevents the same worker from hot-looping the job.
+func ReleaseWithBackoff(ctx context.Context, jobID string, delay time.Duration) error {
+	_, err := models.VideoProcessModel.FindOneAndUpdate(ctx,
+		bson.M{
+			"_id":    jobID,
+			"status": enums.ProcessStatusProcessing,
+		},
+		bson.M{
+			"$set": bson.M{
+				"status":      enums.ProcessStatusPending,
+				"nextRetryAt": time.Now().Add(delay),
+			},
+			"$unset": bson.M{"workerId": "", "claimedAt": ""},
+		},
+	)
+	if err != nil && errors.Is(err, mongo.ErrNoDocuments) {
+		return nil
 	}
 	return err
 }
